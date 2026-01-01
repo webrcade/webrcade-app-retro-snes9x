@@ -17,12 +17,66 @@ export class Emulator extends RetroAppWrapper {
 
     this.lastFrequency = 60;
     this.frequency = 60;
-
     this.audioStarted = 0;
+
+    // Fractional sample carry (for 800.25)
+    this.audioCarry = 0;
+
+    this.total = 0;
+    this.count = 0;
+
     this.audioCallback = (offset, length) => {
-      length = length << 1;
-      const audioArray = new Int16Array(window.Module.HEAP16.buffer, offset, length);
-      this.audioProcessor.storeSoundCombinedInput(audioArray, 2, length, 0, 32768);
+      // length = incoming frames (mono)
+      //this.total += length;
+      this.count++;
+
+      // ---- target frames this callback ----
+      const exactFrames = 48015 / this.frequency; // 800.25
+      const framesWithCarry = exactFrames + this.audioCarry;
+      const outFrames = Math.floor(framesWithCarry);
+      this.audioCarry = framesWithCarry - outFrames;
+
+      if (this.count >= this.frequency) {
+        // console.log("frame: " + length + ", exact: " + exactFrames);
+        // console.log("total:", this.total);
+        this.total = 0;
+        this.count = 0;
+      }
+
+      // ---- input samples (stereo interleaved) ----
+      const inSamples = length << 1;
+      const input = new Int16Array(
+        window.Module.HEAP16.buffer,
+        offset,
+        inSamples
+      );
+
+      // ---- output buffer (stereo interleaved) ----
+      const outSamples = outFrames << 1;
+      const output = new Int16Array(outSamples);
+
+      // ---- frame walking resampler (no timing drift) ----
+      const step = length / outFrames;
+
+      let srcFrame = 0;
+      for (let i = 0; i < outFrames; i++) {
+        const si = (srcFrame | 0) << 1;
+
+        output[i * 2]     = input[si];
+        output[i * 2 + 1] = input[si + 1];
+
+        srcFrame += step;
+      }
+
+      this.total += (outSamples >> 1);
+
+      this.audioProcessor.storeSoundCombinedInput(
+        output,
+        2,
+        outSamples,
+        0,
+        32768
+      );
     };
   }
 
@@ -30,8 +84,8 @@ export class Emulator extends RetroAppWrapper {
     return new ScriptAudioProcessor(
       2,
       48000,
-      32768,
-      4096
+      8192 + 4096,
+      2048
     ).setDebug(this.debug);
   }
 
